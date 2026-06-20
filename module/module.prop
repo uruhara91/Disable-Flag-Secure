@@ -1,0 +1,6 @@
+id=zygisk_secure_capture
+name=Zygisk Secure Capture
+version=0.1.0-dev
+versionCode=1
+author=Muhamad Satria
+description=Experimental system-first secure-layer screenshot capture for Zygisk. Protected/DRM capture remains disabled.
