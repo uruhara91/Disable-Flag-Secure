@@ -10,6 +10,7 @@ LOCAL_SRC_FILES := \
     lifecycle/capability_registry.cpp \
     lifecycle/process_policy.cpp \
     lifecycle/feature_manager.cpp \
+    capture/android11_systemui_hook.cpp \
     capture/jni_capture_hook.cpp
 LOCAL_CPPFLAGS := \
     -include $(LOCAL_PATH)/common/zygisk_api.hpp \
@@ -23,5 +24,5 @@ LOCAL_LDFLAGS := \
     -flto=thin -Wl,--gc-sections -Wl,--icf=safe -Wl,--as-needed \
     -Wl,--exclude-libs,ALL -Wl,--no-undefined \
     -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
-LOCAL_LDLIBS := -llog
+LOCAL_LDLIBS := -llog -landroid
 include $(BUILD_SHARED_LIBRARY)
