@@ -9,6 +9,7 @@ fi
 PACKAGE_DIR="$1"
 ZIP_FILE="$2"
 NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+MAX_LIBRARY_BYTES=$((512 * 1024))
 
 if [[ -z "$NDK_ROOT" ]]; then
   echo "Set ANDROID_NDK_HOME or ANDROID_NDK_ROOT." >&2
@@ -35,8 +36,16 @@ verify_elf() {
   local abi="$1"
   local machine="$2"
   local file="$PACKAGE_DIR/zygisk/$abi.so"
+  local size
 
   [[ -f "$file" ]] || { echo "Missing $file" >&2; return 1; }
+
+  size="$(wc -c < "$file")"
+  if [[ "$size" -gt "$MAX_LIBRARY_BYTES" ]]; then
+    echo "Unexpectedly large module for $abi: $size bytes" >&2
+    return 1
+  fi
+
   "$READELF" -h "$file" | grep -q "$machine" || {
     echo "Unexpected ELF machine for $abi" >&2
     return 1
@@ -49,10 +58,16 @@ verify_elf() {
     echo "Missing zygisk_companion_entry in $abi" >&2
     return 1
   }
-  if "$READELF" -d "$file" | grep -q 'libc++_shared'; then
-    echo "Unexpected libc++_shared dependency in $abi" >&2
+
+  if "$READELF" -d "$file" | grep -Eq 'libc\+\+_shared|libstdc\+\+'; then
+    echo "Unexpected shared C++ runtime dependency in $abi" >&2
     return 1
   fi
+  if "$READELF" -d "$file" | grep -q 'TEXTREL'; then
+    echo "Text relocations detected in $abi" >&2
+    return 1
+  fi
+
   "$READELF" -lW "$file" | grep -q 'GNU_RELRO' || {
     echo "Missing GNU_RELRO in $abi" >&2
     return 1
@@ -63,6 +78,10 @@ verify_elf() {
   }
   if "$READELF" -lW "$file" | grep 'GNU_STACK' | grep -q 'RWE'; then
     echo "Executable stack detected in $abi" >&2
+    return 1
+  fi
+  if "$READELF" -lW "$file" | grep '^  LOAD' | grep -q 'RWE'; then
+    echo "Writable executable LOAD segment detected in $abi" >&2
     return 1
   fi
 }
@@ -79,9 +98,19 @@ for required in module.prop customize.sh post-fs-data.sh service.sh config/defau
 done
 
 [[ -f "$ZIP_FILE" ]] || { echo "Missing ZIP: $ZIP_FILE" >&2; exit 1; }
-unzip -Z1 "$ZIP_FILE" | grep -qx 'zygisk/arm64-v8a.so'
-unzip -Z1 "$ZIP_FILE" | grep -qx 'zygisk/armeabi-v7a.so'
-unzip -Z1 "$ZIP_FILE" | grep -qx 'zygisk/x86_64.so'
-unzip -Z1 "$ZIP_FILE" | grep -qx 'module.prop'
+ZIP_ENTRIES="$(unzip -Z1 "$ZIP_FILE")"
+printf '%s\n' "$ZIP_ENTRIES" | grep -qx 'zygisk/arm64-v8a.so'
+printf '%s\n' "$ZIP_ENTRIES" | grep -qx 'zygisk/armeabi-v7a.so'
+printf '%s\n' "$ZIP_ENTRIES" | grep -qx 'zygisk/x86_64.so'
+printf '%s\n' "$ZIP_ENTRIES" | grep -qx 'module.prop'
+
+if printf '%s\n' "$ZIP_ENTRIES" | grep -Eq '(^/|(^|/)\.\.(/|$)|^__MACOSX/|\.tmp$)'; then
+  echo "Unsafe or temporary path detected in module ZIP" >&2
+  exit 1
+fi
+if [[ -n "$(printf '%s\n' "$ZIP_ENTRIES" | sort | uniq -d)" ]]; then
+  echo "Duplicate path detected in module ZIP" >&2
+  exit 1
+fi
 
 echo "Artifact verification passed."
