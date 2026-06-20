@@ -1,2 +1,3 @@
-# Reserved for future package exclusions.
+# Exclusions take precedence over targets and vendor process candidates.
+# One package or exact process name per line.
 # Protected/DRM buffers remain excluded globally regardless of this file.

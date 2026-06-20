@@ -1,52 +1,66 @@
-#!/usr/bin/env sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-NDK_BUILD=${NDK_BUILD:-${ANDROID_NDK_HOME:-}/ndk-build}
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+MODULE_PROP="$ROOT/module/module.prop"
+VERSION="$(sed -n 's/^version=//p' "$MODULE_PROP" | head -n 1)"
 
-if [ ! -x "$NDK_BUILD" ]; then
-    echo "ndk-build not found. Set ANDROID_NDK_HOME or NDK_BUILD." >&2
-    exit 1
+if [[ -z "$NDK_ROOT" ]]; then
+  echo "Set ANDROID_NDK_HOME or ANDROID_NDK_ROOT." >&2
+  exit 1
+fi
+if [[ -z "$VERSION" ]]; then
+  echo "Could not read version from $MODULE_PROP" >&2
+  exit 1
 fi
 
-"$ROOT_DIR/scripts/sync_zygisk_header.sh"
+NDK_BUILD="$NDK_ROOT/ndk-build"
+[[ -x "$NDK_BUILD" ]] || {
+  echo "ndk-build was not found under $NDK_ROOT" >&2
+  exit 1
+}
 
-OUT_DIR="$ROOT_DIR/out"
-OBJ_DIR="$OUT_DIR/obj"
-LIB_DIR="$OUT_DIR/libs"
-PKG_DIR="$OUT_DIR/package"
+"$ROOT/scripts/sync_zygisk_header.sh"
+"$ROOT/scripts/run_host_tests.sh"
 
-rm -rf "$OBJ_DIR" "$LIB_DIR" "$PKG_DIR"
-mkdir -p "$OBJ_DIR" "$LIB_DIR" "$PKG_DIR/zygisk"
+OUT="$ROOT/out"
+OBJ="$OUT/obj"
+LIBS="$OUT/libs"
+PACKAGE="$OUT/package"
+DIST="$ROOT/dist"
+JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+
+rm -rf "$OBJ" "$LIBS" "$PACKAGE"
+mkdir -p "$OBJ" "$LIBS" "$PACKAGE/zygisk" "$DIST"
 
 "$NDK_BUILD" \
-    NDK_PROJECT_PATH="$ROOT_DIR/module" \
-    APP_BUILD_SCRIPT="$ROOT_DIR/module/jni/Android.mk" \
-    NDK_APPLICATION_MK="$ROOT_DIR/module/jni/Application.mk" \
-    NDK_OUT="$OBJ_DIR" \
-    NDK_LIBS_OUT="$LIB_DIR"
+  NDK_PROJECT_PATH="$ROOT/module" \
+  APP_BUILD_SCRIPT="$ROOT/module/jni/Android.mk" \
+  NDK_APPLICATION_MK="$ROOT/module/jni/Application.mk" \
+  NDK_OUT="$OBJ" \
+  NDK_LIBS_OUT="$LIBS" \
+  -j"$JOBS"
 
 for abi in arm64-v8a armeabi-v7a x86_64; do
-    src="$LIB_DIR/$abi/libzygisk_secure_capture.so"
-    if [ -f "$src" ]; then
-        cp "$src" "$PKG_DIR/zygisk/$abi.so"
-    fi
+  cp "$LIBS/$abi/libzygisk_secure_capture.so" "$PACKAGE/zygisk/$abi.so"
 done
 
-cp "$ROOT_DIR/module/module.prop" "$PKG_DIR/"
-cp "$ROOT_DIR/module/customize.sh" "$PKG_DIR/"
-cp "$ROOT_DIR/module/post-fs-data.sh" "$PKG_DIR/"
-cp "$ROOT_DIR/module/service.sh" "$PKG_DIR/"
-cp -R "$ROOT_DIR/module/config" "$PKG_DIR/"
+cp "$ROOT/module/module.prop" "$PACKAGE/"
+cp "$ROOT/module/customize.sh" "$PACKAGE/"
+cp "$ROOT/module/post-fs-data.sh" "$PACKAGE/"
+cp "$ROOT/module/service.sh" "$PACKAGE/"
+cp -R "$ROOT/module/config" "$PACKAGE/"
+cp "$ROOT/LICENSE" "$PACKAGE/"
 
-chmod 0755 "$PKG_DIR/customize.sh" "$PKG_DIR/post-fs-data.sh" "$PKG_DIR/service.sh"
+chmod 0755 "$PACKAGE/customize.sh" "$PACKAGE/post-fs-data.sh" "$PACKAGE/service.sh"
 
-if command -v zip >/dev/null 2>&1; then
-    (
-        cd "$PKG_DIR"
-        zip -qr "$OUT_DIR/zygisk-secure-capture-v0.1-dev.zip" .
-    )
-    echo "Package: $OUT_DIR/zygisk-secure-capture-v0.1-dev.zip"
-else
-    echo "zip not found; unpacked package is at $PKG_DIR" >&2
-fi
+ZIP="$DIST/Zygisk-Secure-Capture-${VERSION}.zip"
+rm -f "$ZIP"
+(
+  cd "$PACKAGE"
+  zip -r9 "$ZIP" .
+)
+
+"$ROOT/scripts/verify_artifact.sh" "$PACKAGE" "$ZIP"
+echo "Built module: $ZIP"

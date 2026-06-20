@@ -1,67 +1,116 @@
 # Zygisk Secure Capture
 
-Experimental **Zygisk-only** module for allowing Android system screenshot paths to include secure layers without requiring LSPosed.
+Experimental **Zygisk-only** foundation for allowing Android screenshot paths to include
+secure layers without requiring LSPosed. The architecture is system-first: prefer a narrowly
+scoped capture hook in `system_server`, then add screenshot-service adapters and target-app
+fallbacks only when a platform path cannot cover the requirement.
 
-> **Development status:** v0.1 draft. This repository is not yet a tested release. Review the code and test on a recoverable device before flashing.
+> **Status:** v0.1 development foundation. It has not yet been built on CI or validated on a
+> physical device. Keep a working recovery path and do not treat this branch as a release.
+
+## Non-negotiable safety boundary
+
+The module never enables protected/DRM-backed buffer capture. Every intercepted request writes:
+
+```text
+mAllowProtected = false
+mCaptureSecureLayers = true
+```
+
+The protected-content write happens first. Unknown classes, signatures, fields, process roles,
+configuration snapshots, and future Binder layouts fail open to original Android behavior.
 
 ## v0.1 scope
 
-- Hooks screenshot capture primitives in `system_server` only.
-- Runtime-probes explicit AOSP JNI signatures instead of relying only on `SDK_INT`.
-- Supports the known AOSP layouts used by:
+- Zygisk public API v4 only; no loader-specific internals.
+- `system_server` JNI hooks for AOSP capture primitives.
+- Runtime profile probing for:
   - Android 12–13: `android.view.SurfaceControl`.
-  - Android 14: `android.window.ScreenCapture` with the two-argument layer native.
-  - Android 15–16: `android.window.ScreenCapture` with the `sync` layer argument.
-- Forces `mAllowProtected = false` before enabling `mCaptureSecureLayers = true`.
-- Fails open when a class, field, or native signature is unavailable.
-- Unloads from every app process; v0.1 remains loaded only in `system_server`.
-- Includes a root-companion configuration channel and a three-boot auto-disable guard.
+  - Android 14: `android.window.ScreenCapture` two-argument layer native.
+  - Android 15–16: `android.window.ScreenCapture` layer native with `sync`.
+- Exact method preflight before any hook is installed.
+- Independent display/layer capability reporting.
+- Immutable, checksummed root-companion configuration snapshot.
+- Bounded and validated `targets.txt` / `exclude.txt` parsing for later versions.
+- Automatic unload from every app process because v0.1 has no app-side backend.
+- Three-incomplete-boot automatic disable guard.
+- Hardened multi-ABI build and artifact verification.
 
-## Deliberately not implemented yet
+## Deliberately deferred
 
-- Sanitizing `ScreenshotHardwareBuffer.containsSecureLayers` metadata.
-- Screenshot-observer suppression.
-- Screen-recording callback suppression.
-- Vendor-specific screenshot services.
-- Binder `relayout` fallback.
+- `ScreenshotHardwareBuffer.containsSecureLayers` metadata sanitization.
+- Android 14+ screenshot-observer suppression.
+- Android 15+ screen-recording callback suppression.
+- One UI, HyperOS, OPlus, and other vendor adapters.
+- Binder `IWindowSession.relayout` fallback.
 
-Because metadata sanitization is not present in v0.1, some screenshot callers may still reject or refuse to persist a captured buffer even when the secure pixels were included.
+The deferred components already have process roles, feature flags, capability bits, and feature
+contracts reserved for them. They should be added as isolated installers rather than folded into
+one global hook.
 
-## Safety boundary
+## Why the foundation differs from the SystemUI module
 
-This project does **not** enable protected or DRM-backed buffer capture. The hook writes `mAllowProtected = false` on every intercepted capture request before writing `mCaptureSecureLayers = true`.
-
-Use only on a device and content you are authorized to control. Keep a working recovery path available.
+`SystemUI-MediaMetadata-NPE-Fix` is intentionally fingerprint-locked, arm64-only, and optimized
+around one Android 12 Binder layout. This project retains its useful engineering rules—early
+scope decisions, exact preflight, resident-library safety, minimal release logs, and ELF/ZIP
+verification—but replaces firmware constants with runtime capability profiles and independent
+feature backends.
 
 ## Build
 
-Requirements:
+Linux/macOS with Android NDK:
 
-- Android NDK with `ndk-build`.
-- `curl` or `wget` to obtain the published Zygisk module API header.
-- `zip` for the flashable package.
-
-```sh
+```bash
 export ANDROID_NDK_HOME=/path/to/android-ndk
 ./build.sh
 ```
 
-Outputs are written to `out/`.
+Windows PowerShell:
+
+```powershell
+.\build.ps1 -NdkPath 'C:\Android\Sdk\ndk\27.2.12479018'
+```
+
+The flashable development ZIP is written to `dist/`.
+
+For a reproducible reviewed release, pin the Zygisk header:
+
+```bash
+export ZYGISK_HEADER_REV='<immutable commit>'
+export ZYGISK_HEADER_SHA256='<reviewed sha256>'
+./build.sh
+```
 
 ## Configuration
 
-Edit `module/config/default.conf` before packaging, or edit the installed copy under:
+Installed configuration lives under:
 
 ```text
-/data/adb/modules/zygisk_secure_capture/config/default.conf
+/data/adb/modules/zygisk_secure_capture/config/
 ```
 
-Current option:
+`default.conf` contains all planned feature switches. In v0.1 only
+`capture_secure_layers` has an implementation. App-side switches remain inert until their
+backends are compiled.
 
-```ini
-capture_secure_layers=true
+## Recovery
+
+From a root shell or recovery:
+
+```sh
+touch /data/adb/modules/zygisk_secure_capture/disable
+reboot
 ```
+
+The boot guard performs the same disable action after three consecutive boots that never reach
+`sys.boot_completed=1`.
+
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/FEATURE_CONTRACT.md`](docs/FEATURE_CONTRACT.md)
+- [`docs/TESTING.md`](docs/TESTING.md)
 
 ## License
 
-Project code is licensed under `GPL-3.0-only`. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+GPL-3.0-only. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.

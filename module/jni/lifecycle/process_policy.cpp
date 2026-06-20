@@ -1,11 +1,63 @@
 #include "process_policy.hpp"
 
-namespace zsc::lifecycle {
+#include <stddef.h>
 
-bool KeepLibraryInAppProcess(JNIEnv* env, jstring nice_name) noexcept {
-    (void)env;
-    (void)nice_name;
-    return false;
+#include "../common/hash.hpp"
+#include "../common/jni_utils.hpp"
+
+namespace zsc::lifecycle {
+namespace {
+
+template <size_t N>
+constexpr uint64_t LiteralHash(const char (&value)[N]) noexcept {
+    return common::HashAscii(value, N - 1);
+}
+
+constexpr uint64_t kSystemUi = LiteralHash("com.android.systemui");
+constexpr uint64_t kMiuiScreenshot = LiteralHash("com.miui.screenshot");
+constexpr uint64_t kOplusScreenshot = LiteralHash("com.oplus.screenshot");
+constexpr uint64_t kOplusPlatform = LiteralHash("com.oplus.appplatform");
+constexpr uint64_t kFlymeSystemUi = LiteralHash("com.flyme.systemuiex");
+
+bool NeedsTargetAppHooks(const config::ConfigSnapshot& snapshot) noexcept {
+    return config::HasFlag(snapshot, config::kScreenshotDetectionShield) ||
+           config::HasFlag(snapshot, config::kRecordingDetectionShield) ||
+           config::HasFlag(snapshot, config::kLegacyRelayoutAuto);
+}
+
+bool NeedsScreenshotServiceHooks(const config::ConfigSnapshot& snapshot) noexcept {
+    return config::HasFlag(snapshot, config::kMetadataSanitizer) ||
+           config::HasFlag(snapshot, config::kVendorAdaptersAuto);
+}
+
+}  // namespace
+
+ProcessDecision EvaluateAppProcess(JNIEnv* env, jstring nice_name,
+                                   const config::ConfigSnapshot& snapshot) noexcept {
+    const common::ProcessHashes hashes = common::HashProcessName(env, nice_name);
+    if (!hashes.valid || config::ContainsExclude(snapshot, hashes.exact, hashes.base)) {
+        return {ProcessRole::kIrrelevant, false};
+    }
+
+    if (NeedsScreenshotServiceHooks(snapshot)) {
+        if (hashes.base == kSystemUi) return {ProcessRole::kSystemUi, true};
+        if (hashes.base == kMiuiScreenshot || hashes.base == kOplusScreenshot ||
+            hashes.base == kOplusPlatform || hashes.base == kFlymeSystemUi) {
+            return {ProcessRole::kVendorScreenshotService, true};
+        }
+    }
+
+    if (NeedsTargetAppHooks(snapshot) &&
+        config::ContainsTarget(snapshot, hashes.exact, hashes.base)) {
+        return {ProcessRole::kTargetApplication, true};
+    }
+
+    return {ProcessRole::kIrrelevant, false};
+}
+
+bool ShouldKeepSystemServer(const config::ConfigSnapshot& snapshot) noexcept {
+    return config::HasFlag(snapshot, config::kCaptureSecureLayers) ||
+           config::HasFlag(snapshot, config::kMetadataSanitizer);
 }
 
 }  // namespace zsc::lifecycle

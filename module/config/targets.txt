@@ -1,2 +1,5 @@
-# Reserved for the target-app detection shield planned for v0.2.
-# One Android package name per line.
+# Target-app features are not compiled in v0.1.
+# Future versions will accept one package or exact process name per line.
+# Examples:
+# com.example.documents
+# com.example.documents:viewer

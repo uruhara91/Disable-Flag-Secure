@@ -2,10 +2,24 @@
 
 #include <jni.h>
 
+#include "../config/config.hpp"
+
 namespace zsc::lifecycle {
 
-// v0.1 deliberately installs no app-side hooks. Keeping this decision in one
-// policy function prevents accidental library retention as features are added.
-bool KeepLibraryInAppProcess(JNIEnv* env, jstring nice_name) noexcept;
+enum class ProcessRole : unsigned char {
+    kIrrelevant = 0,
+    kSystemUi,
+    kVendorScreenshotService,
+    kTargetApplication,
+};
+
+struct ProcessDecision final {
+    ProcessRole role;
+    bool keep_library;
+};
+
+ProcessDecision EvaluateAppProcess(JNIEnv* env, jstring nice_name,
+                                   const config::ConfigSnapshot& config) noexcept;
+bool ShouldKeepSystemServer(const config::ConfigSnapshot& config) noexcept;
 
 }  // namespace zsc::lifecycle

@@ -1,6 +1,8 @@
 out/
+dist/
 module/jni/zygisk.hpp
 *.so
 *.zip
 .idea/
 .vscode/
+.DS_Store
