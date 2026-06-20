@@ -5,36 +5,47 @@ secure layers without requiring LSPosed. The architecture is system-first: prefe
 scoped capture hook in `system_server`, then add screenshot-service adapters and target-app
 fallbacks only when a platform path cannot cover the requirement.
 
-> **Status:** v0.1 development foundation. It has not yet been built on CI or validated on a
-> physical device. Keep a working recovery path and do not treat this branch as a release.
+> **Status:** v0.1 development foundation. Android 11–16 builds for arm64-v8a,
+> armeabi-v7a, and x86_64 pass CI compilation and ELF/ZIP verification. Physical-device
+> behavior has not yet been validated, so keep a recovery path and do not treat this branch
+> as a release.
 
 ## Non-negotiable safety boundary
 
-The module never enables protected/DRM-backed buffer capture. Every intercepted request writes:
+The module never enables protected/DRM-backed buffer capture. On Android 12–16, every
+intercepted capture request writes:
 
 ```text
 mAllowProtected = false
 mCaptureSecureLayers = true
 ```
 
-The protected-content write happens first. Unknown classes, signatures, fields, process roles,
+Android 11 uses the platform's separate `captureSecureLayers` screenshot argument; it does
+not enable protected buffers. Unknown classes, signatures, fields, process roles,
 configuration snapshots, and future Binder layouts fail open to original Android behavior.
 
 ## v0.1 scope
 
 - Zygisk public API v4 only; no loader-specific internals.
-- `system_server` JNI hooks for AOSP capture primitives.
-- Runtime profile probing for:
-  - Android 12–13: `android.view.SurfaceControl`.
-  - Android 14: `android.window.ScreenCapture` two-argument layer native.
-  - Android 15–16: `android.window.ScreenCapture` layer native with `sync`.
+- Runtime capture profiles:
+  - Android 11 / API 30: exact `com.android.systemui` adapter for
+    `SurfaceControl.nativeScreenshot(..., captureSecureLayers)`.
+  - Android 12–13: `system_server` hook through `android.view.SurfaceControl`.
+  - Android 14: `system_server` hook through `android.window.ScreenCapture` with the
+    two-argument layer native.
+  - Android 15–16: `system_server` hook through `android.window.ScreenCapture` with the
+    `sync` layer argument.
 - Exact method preflight before any hook is installed.
 - Independent display/layer capability reporting.
 - Immutable, checksummed root-companion configuration snapshot.
 - Bounded and validated `targets.txt` / `exclude.txt` parsing for later versions.
-- Automatic unload from every app process because v0.1 has no app-side backend.
+- Immediate unload from every process without a compiled and configured backend.
 - Three-incomplete-boot automatic disable guard.
 - Hardened multi-ABI build and artifact verification.
+
+The Android 11 adapter currently covers the display screenshot path only. Its distinct
+`nativeCaptureLayers` path is deliberately untouched until a secure-layer contract is
+validated separately.
 
 ## Deliberately deferred
 
@@ -90,8 +101,8 @@ Installed configuration lives under:
 ```
 
 `default.conf` contains all planned feature switches. In v0.1 only
-`capture_secure_layers` has an implementation. App-side switches remain inert until their
-backends are compiled.
+`capture_secure_layers` has an implementation. Other switches remain inert until their
+corresponding backends are compiled.
 
 ## Recovery
 
