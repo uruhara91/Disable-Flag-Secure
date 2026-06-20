@@ -2,6 +2,7 @@
 
 #include "zygisk.hpp"
 #include "capture/android11_systemui_hook.hpp"
+#include "common/jni_utils.hpp"
 #include "common/log.hpp"
 #include "config/config.hpp"
 #include "lifecycle/capability_registry.hpp"
@@ -10,6 +11,8 @@
 #include "lifecycle/process_policy.hpp"
 
 namespace {
+
+constexpr char kSystemUiProcess[] = "com.android.systemui";
 
 class SecureCaptureModule final : public zygisk::ModuleBase {
 public:
@@ -22,11 +25,16 @@ public:
         if (api_ == nullptr || args == nullptr) return;
 
         sdk_ = android_get_device_api_level();
-        if (!zsc::lifecycle::kAppFeatureBackendsCompiled || sdk_ != 30) {
+        if (!zsc::lifecycle::kAppFeatureBackendsCompiled || sdk_ != 30 ||
+            !zsc::common::JStringEqualsAscii(
+                    env_, args->nice_name, kSystemUiProcess)) {
             api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             return;
         }
 
+        // Only the exact Android 11 SystemUI process reaches companion IPC.
+        // This keeps specialization of every unrelated app allocation-free
+        // apart from the bounded process-name comparison above.
         if (!zsc::config::LoadFromCompanion(api_, &config_)) {
             api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             return;
