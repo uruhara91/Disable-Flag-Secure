@@ -19,10 +19,12 @@ LOCAL_CPPFLAGS := \
     -fno-semantic-interposition -fstack-protector-strong \
     -fvisibility=hidden -fvisibility-inlines-hidden \
     -ffunction-sections -fdata-sections \
-    -Wall -Wextra -Wpedantic -Werror=return-type -Werror=format
+    -Wall -Wextra -Wpedantic \
+    -Werror=return-type -Werror=format \
+    -Werror=implicit-fallthrough -Werror=switch
 LOCAL_LDFLAGS := \
     -flto=thin -Wl,--gc-sections -Wl,--icf=safe -Wl,--as-needed \
-    -Wl,--exclude-libs,ALL -Wl,--no-undefined \
+    -Wl,--exclude-libs,ALL -Wl,--no-undefined -Wl,--fatal-warnings \
     -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
 LOCAL_LDLIBS := -llog -landroid
 include $(BUILD_SHARED_LIBRARY)
