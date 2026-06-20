@@ -18,6 +18,7 @@ struct CaptureInstallReport final {
 };
 
 CaptureInstallReport InstallJniCaptureHooks(zygisk::Api* api,
-                                            JNIEnv* env) noexcept;
+                                            JNIEnv* env,
+                                            int sdk) noexcept;
 
 }  // namespace zsc::capture
