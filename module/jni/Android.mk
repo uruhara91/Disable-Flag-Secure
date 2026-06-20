@@ -12,6 +12,7 @@ LOCAL_SRC_FILES := \
     lifecycle/feature_manager.cpp \
     capture/jni_capture_hook.cpp
 LOCAL_CPPFLAGS := \
+    -include $(LOCAL_PATH)/common/zygisk_api.hpp \
     -std=c++20 -O2 -flto=thin -DNDEBUG -D_FORTIFY_SOURCE=2 \
     -fno-exceptions -fno-rtti -fno-threadsafe-statics \
     -fno-semantic-interposition -fstack-protector-strong \
