@@ -1,206 +1,294 @@
 #include "jni_capture_hook.hpp"
 
-#include "../lifecycle/capability_registry.hpp"
+#include "../common/attributes.hpp"
+#include "../common/jni_utils.hpp"
+#include "../common/log.hpp"
 #include "../zygisk.hpp"
 
 namespace zsc::capture {
 namespace {
 
 struct CaptureFields final {
-    jfieldID capture_secure_layers = nullptr;
     jfieldID allow_protected = nullptr;
+    jfieldID capture_secure_layers = nullptr;
 };
 
-CaptureFields g_modern_fields;
-CaptureFields g_legacy_fields;
+enum class CaptureAbi : uint8_t {
+    kLegacyObjectListener,
+    kModernLongListener,
+    kModernLongListenerWithSync,
+};
+
+struct CaptureProfile final {
+    lifecycle::ProfileId id;
+    CaptureAbi abi;
+    const char* native_class;
+    const char* args_class;
+    const char* display_signature;
+    const char* layers_signature;
+};
+
+constexpr CaptureProfile kProfiles[] = {
+        {
+                lifecycle::ProfileId::kScreenCaptureAndroid15To16,
+                CaptureAbi::kModernLongListenerWithSync,
+                "android/window/ScreenCapture",
+                "android/window/ScreenCapture$CaptureArgs",
+                "(Landroid/window/ScreenCapture$DisplayCaptureArgs;J)I",
+                "(Landroid/window/ScreenCapture$LayerCaptureArgs;JZ)I",
+        },
+        {
+                lifecycle::ProfileId::kScreenCaptureAndroid14,
+                CaptureAbi::kModernLongListener,
+                "android/window/ScreenCapture",
+                "android/window/ScreenCapture$CaptureArgs",
+                "(Landroid/window/ScreenCapture$DisplayCaptureArgs;J)I",
+                "(Landroid/window/ScreenCapture$LayerCaptureArgs;J)I",
+        },
+        {
+                lifecycle::ProfileId::kSurfaceControlAndroid12To13,
+                CaptureAbi::kLegacyObjectListener,
+                "android/view/SurfaceControl",
+                "android/view/SurfaceControl$CaptureArgs",
+                "(Landroid/view/SurfaceControl$DisplayCaptureArgs;"
+                "Landroid/view/SurfaceControl$ScreenCaptureListener;)I",
+                "(Landroid/view/SurfaceControl$LayerCaptureArgs;"
+                "Landroid/view/SurfaceControl$ScreenCaptureListener;)I",
+        },
+};
+
+CaptureFields g_fields{};
+void* g_original_display = nullptr;
+void* g_original_layers = nullptr;
+uint32_t g_missing_display_log_once = 0;
+uint32_t g_missing_layers_log_once = 0;
 
 using ModernDisplayFn = jint (*)(JNIEnv*, jclass, jobject, jlong);
-using ModernLayersV14Fn = jint (*)(JNIEnv*, jclass, jobject, jlong);
-using ModernLayersV15Fn = jint (*)(JNIEnv*, jclass, jobject, jlong, jboolean);
-using LegacyDisplayFn = jint (*)(JNIEnv*, jclass, jobject, jobject);
-using LegacyLayersFn = jint (*)(JNIEnv*, jclass, jobject, jobject);
+using ModernLayersFn = jint (*)(JNIEnv*, jclass, jobject, jlong);
+using ModernLayersSyncFn = jint (*)(JNIEnv*, jclass, jobject, jlong,
+                                    jboolean);
+using LegacyCaptureFn = jint (*)(JNIEnv*, jclass, jobject, jobject);
 
-ModernDisplayFn g_modern_display = nullptr;
-ModernLayersV14Fn g_modern_layers_v14 = nullptr;
-ModernLayersV15Fn g_modern_layers_v15 = nullptr;
-LegacyDisplayFn g_legacy_display = nullptr;
-LegacyLayersFn g_legacy_layers = nullptr;
-
-void ClearPendingException(JNIEnv* env) noexcept {
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-    }
+ZSC_ALWAYS_INLINE void* LoadOriginal(void* const* slot) noexcept {
+    return __atomic_load_n(slot, __ATOMIC_ACQUIRE);
 }
 
-bool ResolveFields(JNIEnv* env, const char* class_name, CaptureFields* fields) noexcept {
-    jclass clazz = env->FindClass(class_name);
-    if (clazz == nullptr) {
-        ClearPendingException(env);
+void StoreOriginal(void** slot, void* function) noexcept {
+    __atomic_store_n(slot, function, __ATOMIC_RELEASE);
+}
+
+ZSC_ALWAYS_INLINE bool PatchCaptureArgs(JNIEnv* env, jobject args) noexcept {
+    if (ZSC_UNLIKELY(env == nullptr || args == nullptr ||
+                     g_fields.allow_protected == nullptr ||
+                     g_fields.capture_secure_layers == nullptr ||
+                     env->ExceptionCheck())) {
         return false;
     }
 
-    fields->allow_protected = env->GetFieldID(clazz, "mAllowProtected", "Z");
-    if (fields->allow_protected == nullptr || env->ExceptionCheck()) {
-        ClearPendingException(env);
-        env->DeleteLocalRef(clazz);
-        *fields = {};
+    // Protected/DRM capture is disabled first. Secure-layer capture is enabled
+    // only when that safety write succeeds.
+    env->SetBooleanField(args, g_fields.allow_protected, JNI_FALSE);
+    if (ZSC_UNLIKELY(env->ExceptionCheck())) {
+        env->ExceptionClear();
         return false;
     }
 
-    fields->capture_secure_layers = env->GetFieldID(clazz, "mCaptureSecureLayers", "Z");
-    if (fields->capture_secure_layers == nullptr || env->ExceptionCheck()) {
-        ClearPendingException(env);
-        env->DeleteLocalRef(clazz);
-        *fields = {};
+    env->SetBooleanField(args, g_fields.capture_secure_layers, JNI_TRUE);
+    if (ZSC_UNLIKELY(env->ExceptionCheck())) {
+        env->ExceptionClear();
         return false;
     }
-
-    env->DeleteLocalRef(clazz);
     return true;
 }
 
-void PatchCaptureArgs(JNIEnv* env, jobject args, const CaptureFields& fields) noexcept {
-    if (args == nullptr || fields.allow_protected == nullptr ||
+ZSC_HOT jint HookModernDisplay(JNIEnv* env, jclass clazz, jobject args,
+                               jlong listener) {
+    auto original = reinterpret_cast<ModernDisplayFn>(
+            LoadOriginal(&g_original_display));
+    if (ZSC_UNLIKELY(original == nullptr)) {
+        ZSC_LOGE_ONCE(g_missing_display_log_once,
+                      "capture display wrapper missing original pointer");
+        return JNI_ERR;
+    }
+    (void)PatchCaptureArgs(env, args);
+    return original(env, clazz, args, listener);
+}
+
+ZSC_HOT jint HookModernLayers(JNIEnv* env, jclass clazz, jobject args,
+                              jlong listener) {
+    auto original = reinterpret_cast<ModernLayersFn>(
+            LoadOriginal(&g_original_layers));
+    if (ZSC_UNLIKELY(original == nullptr)) {
+        ZSC_LOGE_ONCE(g_missing_layers_log_once,
+                      "capture layers wrapper missing original pointer");
+        return JNI_ERR;
+    }
+    (void)PatchCaptureArgs(env, args);
+    return original(env, clazz, args, listener);
+}
+
+ZSC_HOT jint HookModernLayersSync(JNIEnv* env, jclass clazz, jobject args,
+                                  jlong listener, jboolean sync) {
+    auto original = reinterpret_cast<ModernLayersSyncFn>(
+            LoadOriginal(&g_original_layers));
+    if (ZSC_UNLIKELY(original == nullptr)) {
+        ZSC_LOGE_ONCE(g_missing_layers_log_once,
+                      "capture layers sync wrapper missing original pointer");
+        return JNI_ERR;
+    }
+    (void)PatchCaptureArgs(env, args);
+    return original(env, clazz, args, listener, sync);
+}
+
+ZSC_HOT jint HookLegacyDisplay(JNIEnv* env, jclass clazz, jobject args,
+                               jobject listener) {
+    auto original = reinterpret_cast<LegacyCaptureFn>(
+            LoadOriginal(&g_original_display));
+    if (ZSC_UNLIKELY(original == nullptr)) {
+        ZSC_LOGE_ONCE(g_missing_display_log_once,
+                      "legacy capture display wrapper missing original pointer");
+        return JNI_ERR;
+    }
+    (void)PatchCaptureArgs(env, args);
+    return original(env, clazz, args, listener);
+}
+
+ZSC_HOT jint HookLegacyLayers(JNIEnv* env, jclass clazz, jobject args,
+                              jobject listener) {
+    auto original = reinterpret_cast<LegacyCaptureFn>(
+            LoadOriginal(&g_original_layers));
+    if (ZSC_UNLIKELY(original == nullptr)) {
+        ZSC_LOGE_ONCE(g_missing_layers_log_once,
+                      "legacy capture layers wrapper missing original pointer");
+        return JNI_ERR;
+    }
+    (void)PatchCaptureArgs(env, args);
+    return original(env, clazz, args, listener);
+}
+
+bool ResolveFields(JNIEnv* env, const char* class_name,
+                   CaptureFields* output) noexcept {
+    if (output == nullptr) return false;
+    jclass clazz = common::FindClassNoThrow(env, class_name);
+    if (clazz == nullptr) return false;
+
+    CaptureFields fields{};
+    fields.allow_protected = common::GetFieldIdNoThrow(
+            env, clazz, "mAllowProtected", "Z");
+    fields.capture_secure_layers = common::GetFieldIdNoThrow(
+            env, clazz, "mCaptureSecureLayers", "Z");
+    env->DeleteLocalRef(clazz);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    if (fields.allow_protected == nullptr ||
         fields.capture_secure_layers == nullptr) {
-        return;
+        return false;
+    }
+    *output = fields;
+    return true;
+}
+
+bool HasExactNativeMethods(JNIEnv* env,
+                           const CaptureProfile& profile) noexcept {
+    jclass clazz = common::FindClassNoThrow(env, profile.native_class);
+    if (clazz == nullptr) return false;
+
+    const jmethodID display = common::GetStaticMethodIdNoThrow(
+            env, clazz, "nativeCaptureDisplay", profile.display_signature);
+    const jmethodID layers = common::GetStaticMethodIdNoThrow(
+            env, clazz, "nativeCaptureLayers", profile.layers_signature);
+    env->DeleteLocalRef(clazz);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return display != nullptr && layers != nullptr;
+}
+
+const CaptureProfile* ProbeProfile(JNIEnv* env,
+                                   CaptureFields* fields) noexcept {
+    for (const CaptureProfile& profile : kProfiles) {
+        CaptureFields candidate_fields{};
+        if (!ResolveFields(env, profile.args_class, &candidate_fields)) {
+            continue;
+        }
+        if (!HasExactNativeMethods(env, profile)) continue;
+        *fields = candidate_fields;
+        return &profile;
+    }
+    return nullptr;
+}
+
+void* DisplayReplacement(CaptureAbi abi) noexcept {
+    return abi == CaptureAbi::kLegacyObjectListener
+            ? reinterpret_cast<void*>(HookLegacyDisplay)
+            : reinterpret_cast<void*>(HookModernDisplay);
+}
+
+void* LayersReplacement(CaptureAbi abi) noexcept {
+    switch (abi) {
+        case CaptureAbi::kLegacyObjectListener:
+            return reinterpret_cast<void*>(HookLegacyLayers);
+        case CaptureAbi::kModernLongListener:
+            return reinterpret_cast<void*>(HookModernLayers);
+        case CaptureAbi::kModernLongListenerWithSync:
+            return reinterpret_cast<void*>(HookModernLayersSync);
+    }
+    return nullptr;
+}
+
+bool HookOne(zygisk::Api* api, JNIEnv* env, const char* class_name,
+             const char* method_name, const char* signature,
+             void* replacement, void** original_slot) noexcept {
+    if (api == nullptr || env == nullptr || class_name == nullptr ||
+        method_name == nullptr || signature == nullptr ||
+        replacement == nullptr || original_slot == nullptr) {
+        return false;
     }
 
-    // Safety invariant: protected/DRM capture is disabled before secure-layer
-    // capture is enabled. If this write fails, leave capture behavior unchanged.
-    env->SetBooleanField(args, fields.allow_protected, JNI_FALSE);
-    if (env->ExceptionCheck()) {
-        ClearPendingException(env);
-        return;
-    }
-
-    env->SetBooleanField(args, fields.capture_secure_layers, JNI_TRUE);
-    ClearPendingException(env);
-}
-
-jint HookModernDisplay(JNIEnv* env, jclass clazz, jobject args, jlong listener) {
-    PatchCaptureArgs(env, args, g_modern_fields);
-    return g_modern_display != nullptr
-            ? g_modern_display(env, clazz, args, listener)
-            : JNI_ERR;
-}
-
-jint HookModernLayersV14(JNIEnv* env, jclass clazz, jobject args, jlong listener) {
-    PatchCaptureArgs(env, args, g_modern_fields);
-    return g_modern_layers_v14 != nullptr
-            ? g_modern_layers_v14(env, clazz, args, listener)
-            : JNI_ERR;
-}
-
-jint HookModernLayersV15(JNIEnv* env, jclass clazz, jobject args, jlong listener,
-                         jboolean sync) {
-    PatchCaptureArgs(env, args, g_modern_fields);
-    return g_modern_layers_v15 != nullptr
-            ? g_modern_layers_v15(env, clazz, args, listener, sync)
-            : JNI_ERR;
-}
-
-jint HookLegacyDisplay(JNIEnv* env, jclass clazz, jobject args, jobject listener) {
-    PatchCaptureArgs(env, args, g_legacy_fields);
-    return g_legacy_display != nullptr
-            ? g_legacy_display(env, clazz, args, listener)
-            : JNI_ERR;
-}
-
-jint HookLegacyLayers(JNIEnv* env, jclass clazz, jobject args, jobject listener) {
-    PatchCaptureArgs(env, args, g_legacy_fields);
-    return g_legacy_layers != nullptr
-            ? g_legacy_layers(env, clazz, args, listener)
-            : JNI_ERR;
-}
-
-template <typename Function>
-Function FunctionFromVoid(void* pointer) noexcept {
-    return reinterpret_cast<Function>(pointer);
-}
-
-uint32_t InstallModernProfile(zygisk::Api* api, JNIEnv* env) noexcept {
-    if (!ResolveFields(env, "android/window/ScreenCapture$CaptureArgs", &g_modern_fields)) {
-        return 0;
-    }
-
-    JNINativeMethod methods[] = {
-            {const_cast<char*>("nativeCaptureDisplay"),
-             const_cast<char*>("(Landroid/window/ScreenCapture$DisplayCaptureArgs;J)I"),
-             reinterpret_cast<void*>(HookModernDisplay)},
-            {const_cast<char*>("nativeCaptureLayers"),
-             const_cast<char*>("(Landroid/window/ScreenCapture$LayerCaptureArgs;J)I"),
-             reinterpret_cast<void*>(HookModernLayersV14)},
-            {const_cast<char*>("nativeCaptureLayers"),
-             const_cast<char*>("(Landroid/window/ScreenCapture$LayerCaptureArgs;JZ)I"),
-             reinterpret_cast<void*>(HookModernLayersV15)},
+    JNINativeMethod method{
+            const_cast<char*>(method_name),
+            const_cast<char*>(signature),
+            replacement,
     };
-
-    api->hookJniNativeMethods(env, "android/window/ScreenCapture", methods,
-                              sizeof(methods) / sizeof(methods[0]));
-
-    uint32_t features = 0;
-    if (methods[0].fnPtr != nullptr) {
-        g_modern_display = FunctionFromVoid<ModernDisplayFn>(methods[0].fnPtr);
-        features |= lifecycle::kCaptureDisplay;
-    }
-    if (methods[1].fnPtr != nullptr) {
-        g_modern_layers_v14 = FunctionFromVoid<ModernLayersV14Fn>(methods[1].fnPtr);
-        features |= lifecycle::kCaptureLayers;
-    }
-    if (methods[2].fnPtr != nullptr) {
-        g_modern_layers_v15 = FunctionFromVoid<ModernLayersV15Fn>(methods[2].fnPtr);
-        features |= lifecycle::kCaptureLayers;
-    }
-    if (features != 0) {
-        features |= lifecycle::kModernScreenCaptureProfile;
-    }
-    return features;
-}
-
-uint32_t InstallLegacyProfile(zygisk::Api* api, JNIEnv* env) noexcept {
-    if (!ResolveFields(env, "android/view/SurfaceControl$CaptureArgs", &g_legacy_fields)) {
-        return 0;
-    }
-
-    JNINativeMethod methods[] = {
-            {const_cast<char*>("nativeCaptureDisplay"),
-             const_cast<char*>("(Landroid/view/SurfaceControl$DisplayCaptureArgs;Landroid/view/SurfaceControl$ScreenCaptureListener;)I"),
-             reinterpret_cast<void*>(HookLegacyDisplay)},
-            {const_cast<char*>("nativeCaptureLayers"),
-             const_cast<char*>("(Landroid/view/SurfaceControl$LayerCaptureArgs;Landroid/view/SurfaceControl$ScreenCaptureListener;)I"),
-             reinterpret_cast<void*>(HookLegacyLayers)},
-    };
-
-    api->hookJniNativeMethods(env, "android/view/SurfaceControl", methods,
-                              sizeof(methods) / sizeof(methods[0]));
-
-    uint32_t features = 0;
-    if (methods[0].fnPtr != nullptr) {
-        g_legacy_display = FunctionFromVoid<LegacyDisplayFn>(methods[0].fnPtr);
-        features |= lifecycle::kCaptureDisplay;
-    }
-    if (methods[1].fnPtr != nullptr) {
-        g_legacy_layers = FunctionFromVoid<LegacyLayersFn>(methods[1].fnPtr);
-        features |= lifecycle::kCaptureLayers;
-    }
-    if (features != 0) {
-        features |= lifecycle::kLegacySurfaceControlProfile;
-    }
-    return features;
+    api->hookJniNativeMethods(env, class_name, &method, 1);
+    if (method.fnPtr == nullptr) return false;
+    StoreOriginal(original_slot, method.fnPtr);
+    return true;
 }
 
 }  // namespace
 
-uint32_t InstallJniCaptureHooks(zygisk::Api* api, JNIEnv* env) noexcept {
-    if (api == nullptr || env == nullptr) {
-        return 0;
+CaptureInstallReport InstallJniCaptureHooks(zygisk::Api* api,
+                                            JNIEnv* env) noexcept {
+    CaptureInstallReport report{
+            0,
+            lifecycle::ProfileId::kNone,
+            false,
+    };
+    if (api == nullptr || env == nullptr || env->ExceptionCheck()) {
+        return report;
     }
 
-    uint32_t features = InstallModernProfile(api, env);
-    if ((features & (lifecycle::kCaptureDisplay | lifecycle::kCaptureLayers)) == 0) {
-        features |= InstallLegacyProfile(api, env);
+    CaptureFields fields{};
+    const CaptureProfile* profile = ProbeProfile(env, &fields);
+    if (profile == nullptr) return report;
+
+    // Publish immutable field IDs before any wrapper can be entered.
+    g_fields = fields;
+    report.profile = profile->id;
+    report.hook_attempted = true;
+
+    if (HookOne(api, env, profile->native_class, "nativeCaptureDisplay",
+                profile->display_signature, DisplayReplacement(profile->abi),
+                &g_original_display)) {
+        report.installed |= lifecycle::kCaptureDisplay;
     }
-    return features;
+
+    if (HookOne(api, env, profile->native_class, "nativeCaptureLayers",
+                profile->layers_signature, LayersReplacement(profile->abi),
+                &g_original_layers)) {
+        report.installed |= lifecycle::kCaptureLayers;
+    }
+
+    return report;
 }
 
 }  // namespace zsc::capture
