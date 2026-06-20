@@ -10,6 +10,8 @@ PACKAGE_DIR="$1"
 ZIP_FILE="$2"
 NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 MAX_LIBRARY_BYTES=$((512 * 1024))
+EXPECTED_EXPORTS=$'zygisk_companion_entry\nzygisk_module_entry'
+EXPECTED_NEEDED=$'libc.so\nliblog.so'
 
 if [[ -z "$NDK_ROOT" ]]; then
   echo "Set ANDROID_NDK_HOME or ANDROID_NDK_ROOT." >&2
@@ -37,6 +39,8 @@ verify_elf() {
   local machine="$2"
   local file="$PACKAGE_DIR/zygisk/$abi.so"
   local size
+  local exports
+  local needed
 
   [[ -f "$file" ]] || { echo "Missing $file" >&2; return 1; }
 
@@ -50,21 +54,35 @@ verify_elf() {
     echo "Unexpected ELF machine for $abi" >&2
     return 1
   }
-  "$READELF" -Ws "$file" | grep -q 'zygisk_module_entry' || {
-    echo "Missing zygisk_module_entry in $abi" >&2
-    return 1
-  }
-  "$READELF" -Ws "$file" | grep -q 'zygisk_companion_entry' || {
-    echo "Missing zygisk_companion_entry in $abi" >&2
-    return 1
-  }
 
-  if "$READELF" -d "$file" | grep -Eq 'libc\+\+_shared|libstdc\+\+'; then
-    echo "Unexpected shared C++ runtime dependency in $abi" >&2
+  exports="$(
+    "$READELF" -Ws "$file" |
+      awk '$5 == "GLOBAL" && $7 != "UND" {print $8}' |
+      sort -u
+  )"
+  if [[ "$exports" != "$EXPECTED_EXPORTS" ]]; then
+    echo "Unexpected exported symbols in $abi:" >&2
+    printf '%s\n' "$exports" >&2
     return 1
   fi
-  if "$READELF" -d "$file" | grep -q 'TEXTREL'; then
-    echo "Text relocations detected in $abi" >&2
+
+  needed="$(
+    "$READELF" -d "$file" |
+      sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' |
+      sort -u
+  )"
+  if [[ "$needed" != "$EXPECTED_NEEDED" ]]; then
+    echo "Unexpected shared-library dependencies in $abi:" >&2
+    printf '%s\n' "$needed" >&2
+    return 1
+  fi
+
+  if "$READELF" -d "$file" | grep -Eq 'TEXTREL|RPATH|RUNPATH'; then
+    echo "Forbidden dynamic tag detected in $abi" >&2
+    return 1
+  fi
+  if "$READELF" -S "$file" | grep -Eq '\.debug_|\.symtab'; then
+    echo "Debug or full symbol table detected in $abi" >&2
     return 1
   fi
 
