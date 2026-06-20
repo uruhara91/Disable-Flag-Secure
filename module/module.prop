@@ -1,0 +1,6 @@
+id=zygisk_secure_capture
+name=Zygisk Secure Capture
+version=0.1.0-dev
+versionCode=1
+author=Muhamad Satria
+description=Experimental system-first secure-layer capture foundation for Android 12-16. Protected and DRM capture remain disabled.

@@ -1,0 +1,54 @@
+name: build
+
+on:
+  push:
+    branches: [main, 'foundation/**', 'bootstrap/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ndk-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NDK_VERSION: 27.2.12479018
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate scripts
+        run: |
+          bash -n build.sh
+          bash -n scripts/sync_zygisk_header.sh
+          bash -n scripts/run_host_tests.sh
+          bash -n scripts/verify_artifact.sh
+          sh -n module/customize.sh
+          sh -n module/post-fs-data.sh
+          sh -n module/service.sh
+
+      - name: Install Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
+
+      - name: Build and verify
+        shell: bash
+        run: |
+          set -o pipefail
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION" ./build.sh 2>&1 | tee build.log
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-${{ github.sha }}
+          path: build.log
+          if-no-files-found: warn
+
+      - name: Upload module ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: zygisk-secure-capture-${{ github.sha }}
+          path: dist/*.zip
+          if-no-files-found: error
