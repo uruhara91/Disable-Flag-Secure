@@ -1,4 +1,4 @@
-#!/system/bin/sh
+#!/usr/bin/env sh
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -12,6 +12,7 @@ fi
 mkdir -p "$(dirname -- "$DEST")"
 TMP="$DEST.tmp"
 rm -f "$TMP"
+trap 'rm -f "$TMP"' EXIT HUP INT TERM
 
 if command -v curl >/dev/null 2>&1; then
     curl -fL --retry 3 --connect-timeout 15 "$URL" -o "$TMP"
@@ -24,8 +25,8 @@ fi
 
 if ! grep -q "REGISTER_ZYGISK_MODULE" "$TMP"; then
     echo "Downloaded file does not look like the Zygisk public API header" >&2
-    rm -f "$TMP"
     exit 1
 fi
 
 mv "$TMP" "$DEST"
+trap - EXIT HUP INT TERM
