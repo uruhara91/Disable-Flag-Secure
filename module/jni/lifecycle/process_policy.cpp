@@ -25,24 +25,34 @@ bool NeedsTargetAppHooks(const config::ConfigSnapshot& snapshot) noexcept {
            config::HasFlag(snapshot, config::kLegacyRelayoutAuto);
 }
 
-bool NeedsScreenshotServiceHooks(const config::ConfigSnapshot& snapshot) noexcept {
-    return config::HasFlag(snapshot, config::kMetadataSanitizer) ||
+bool NeedsScreenshotServiceHooks(int sdk,
+                                 const config::ConfigSnapshot& snapshot) noexcept {
+    const bool android11_capture =
+            sdk == 30 &&
+            config::HasFlag(snapshot, config::kCaptureSecureLayers);
+    return android11_capture ||
+           config::HasFlag(snapshot, config::kMetadataSanitizer) ||
            config::HasFlag(snapshot, config::kVendorAdaptersAuto);
 }
 
 }  // namespace
 
-ProcessDecision EvaluateAppProcess(JNIEnv* env, jstring nice_name,
+ProcessDecision EvaluateAppProcess(JNIEnv* env, jstring nice_name, int sdk,
                                    const config::ConfigSnapshot& snapshot) noexcept {
     const common::ProcessHashes hashes = common::HashProcessName(env, nice_name);
-    if (!hashes.valid || config::ContainsExclude(snapshot, hashes.exact, hashes.base)) {
+    if (!hashes.valid ||
+        config::ContainsExclude(snapshot, hashes.exact, hashes.base)) {
         return {ProcessRole::kIrrelevant, false};
     }
 
-    if (NeedsScreenshotServiceHooks(snapshot)) {
-        if (hashes.base == kSystemUi) return {ProcessRole::kSystemUi, true};
-        if (hashes.base == kMiuiScreenshot || hashes.base == kOplusScreenshot ||
-            hashes.base == kOplusPlatform || hashes.base == kFlymeSystemUi) {
+    if (NeedsScreenshotServiceHooks(sdk, snapshot)) {
+        if (hashes.base == kSystemUi) {
+            return {ProcessRole::kSystemUi, true};
+        }
+        if (hashes.base == kMiuiScreenshot ||
+            hashes.base == kOplusScreenshot ||
+            hashes.base == kOplusPlatform ||
+            hashes.base == kFlymeSystemUi) {
             return {ProcessRole::kVendorScreenshotService, true};
         }
     }
@@ -55,8 +65,12 @@ ProcessDecision EvaluateAppProcess(JNIEnv* env, jstring nice_name,
     return {ProcessRole::kIrrelevant, false};
 }
 
-bool ShouldKeepSystemServer(const config::ConfigSnapshot& snapshot) noexcept {
-    return config::HasFlag(snapshot, config::kCaptureSecureLayers) ||
+bool ShouldKeepSystemServer(int sdk,
+                            const config::ConfigSnapshot& snapshot) noexcept {
+    const bool system_capture =
+            sdk >= 31 &&
+            config::HasFlag(snapshot, config::kCaptureSecureLayers);
+    return system_capture ||
            config::HasFlag(snapshot, config::kMetadataSanitizer);
 }
 
