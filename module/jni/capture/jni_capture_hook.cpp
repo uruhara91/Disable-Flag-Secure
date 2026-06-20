@@ -8,6 +8,9 @@
 namespace zsc::capture {
 namespace {
 
+static_assert(sizeof(void*) == 4 || sizeof(void*) == 8,
+              "unsupported pointer width");
+
 struct CaptureFields final {
     jfieldID allow_protected = nullptr;
     jfieldID capture_secure_layers = nullptr;
@@ -28,33 +31,33 @@ struct CaptureProfile final {
     const char* layers_signature;
 };
 
-constexpr CaptureProfile kProfiles[] = {
-        {
-                lifecycle::ProfileId::kScreenCaptureAndroid15To16,
-                CaptureAbi::kModernLongListenerWithSync,
-                "android/window/ScreenCapture",
-                "android/window/ScreenCapture$CaptureArgs",
-                "(Landroid/window/ScreenCapture$DisplayCaptureArgs;J)I",
-                "(Landroid/window/ScreenCapture$LayerCaptureArgs;JZ)I",
-        },
-        {
-                lifecycle::ProfileId::kScreenCaptureAndroid14,
-                CaptureAbi::kModernLongListener,
-                "android/window/ScreenCapture",
-                "android/window/ScreenCapture$CaptureArgs",
-                "(Landroid/window/ScreenCapture$DisplayCaptureArgs;J)I",
-                "(Landroid/window/ScreenCapture$LayerCaptureArgs;J)I",
-        },
-        {
-                lifecycle::ProfileId::kSurfaceControlAndroid12To13,
-                CaptureAbi::kLegacyObjectListener,
-                "android/view/SurfaceControl",
-                "android/view/SurfaceControl$CaptureArgs",
-                "(Landroid/view/SurfaceControl$DisplayCaptureArgs;"
-                "Landroid/view/SurfaceControl$ScreenCaptureListener;)I",
-                "(Landroid/view/SurfaceControl$LayerCaptureArgs;"
-                "Landroid/view/SurfaceControl$ScreenCaptureListener;)I",
-        },
+constexpr CaptureProfile kAndroid15To16Profile{
+        lifecycle::ProfileId::kScreenCaptureAndroid15To16,
+        CaptureAbi::kModernLongListenerWithSync,
+        "android/window/ScreenCapture",
+        "android/window/ScreenCapture$CaptureArgs",
+        "(Landroid/window/ScreenCapture$DisplayCaptureArgs;J)I",
+        "(Landroid/window/ScreenCapture$LayerCaptureArgs;JZ)I",
+};
+
+constexpr CaptureProfile kAndroid14Profile{
+        lifecycle::ProfileId::kScreenCaptureAndroid14,
+        CaptureAbi::kModernLongListener,
+        "android/window/ScreenCapture",
+        "android/window/ScreenCapture$CaptureArgs",
+        "(Landroid/window/ScreenCapture$DisplayCaptureArgs;J)I",
+        "(Landroid/window/ScreenCapture$LayerCaptureArgs;J)I",
+};
+
+constexpr CaptureProfile kAndroid12To13Profile{
+        lifecycle::ProfileId::kSurfaceControlAndroid12To13,
+        CaptureAbi::kLegacyObjectListener,
+        "android/view/SurfaceControl",
+        "android/view/SurfaceControl$CaptureArgs",
+        "(Landroid/view/SurfaceControl$DisplayCaptureArgs;"
+        "Landroid/view/SurfaceControl$ScreenCaptureListener;)I",
+        "(Landroid/view/SurfaceControl$LayerCaptureArgs;"
+        "Landroid/view/SurfaceControl$ScreenCaptureListener;)I",
 };
 
 CaptureFields g_fields{};
@@ -85,8 +88,6 @@ ZSC_ALWAYS_INLINE bool PatchCaptureArgs(JNIEnv* env, jobject args) noexcept {
         return false;
     }
 
-    // Protected/DRM capture is disabled first. Secure-layer capture is enabled
-    // only when that safety write succeeds.
     env->SetBooleanField(args, g_fields.allow_protected, JNI_FALSE);
     if (ZSC_UNLIKELY(env->ExceptionCheck())) {
         env->ExceptionClear();
@@ -202,16 +203,42 @@ bool HasExactNativeMethods(JNIEnv* env,
     return display != nullptr && layers != nullptr;
 }
 
-const CaptureProfile* ProbeProfile(JNIEnv* env,
-                                   CaptureFields* fields) noexcept {
-    for (const CaptureProfile& profile : kProfiles) {
-        CaptureFields candidate_fields{};
-        if (!ResolveFields(env, profile.args_class, &candidate_fields)) {
-            continue;
-        }
-        if (!HasExactNativeMethods(env, profile)) continue;
-        *fields = candidate_fields;
-        return &profile;
+bool MatchesProfile(JNIEnv* env, const CaptureProfile& profile,
+                    CaptureFields* output) noexcept {
+    CaptureFields fields{};
+    if (!ResolveFields(env, profile.args_class, &fields) ||
+        !HasExactNativeMethods(env, profile)) {
+        return false;
+    }
+    *output = fields;
+    return true;
+}
+
+const CaptureProfile* ProbeProfile(JNIEnv* env, int sdk,
+                                   CaptureFields* output) noexcept {
+    if (env == nullptr || output == nullptr || sdk < 31 || sdk > 36) {
+        return nullptr;
+    }
+
+    // SDK is only a cheap ordering hint. Exact class/field/method probing
+    // remains authoritative, preserving support for vendor backports.
+    const CaptureProfile* ordered[3]{};
+    if (sdk <= 33) {
+        ordered[0] = &kAndroid12To13Profile;
+        ordered[1] = &kAndroid14Profile;
+        ordered[2] = &kAndroid15To16Profile;
+    } else if (sdk == 34) {
+        ordered[0] = &kAndroid14Profile;
+        ordered[1] = &kAndroid15To16Profile;
+        ordered[2] = &kAndroid12To13Profile;
+    } else {
+        ordered[0] = &kAndroid15To16Profile;
+        ordered[1] = &kAndroid14Profile;
+        ordered[2] = &kAndroid12To13Profile;
+    }
+
+    for (const CaptureProfile* profile : ordered) {
+        if (MatchesProfile(env, *profile, output)) return profile;
     }
     return nullptr;
 }
@@ -234,30 +261,47 @@ void* LayersReplacement(CaptureAbi abi) noexcept {
     return nullptr;
 }
 
-bool HookOne(zygisk::Api* api, JNIEnv* env, const char* class_name,
-             const char* method_name, const char* signature,
-             void* replacement, void** original_slot) noexcept {
-    if (api == nullptr || env == nullptr || class_name == nullptr ||
-        method_name == nullptr || signature == nullptr ||
-        replacement == nullptr || original_slot == nullptr) {
-        return false;
+uint32_t HookProfile(zygisk::Api* api, JNIEnv* env,
+                     const CaptureProfile& profile) noexcept {
+    void* display_replacement = DisplayReplacement(profile.abi);
+    void* layers_replacement = LayersReplacement(profile.abi);
+    if (api == nullptr || env == nullptr || display_replacement == nullptr ||
+        layers_replacement == nullptr) {
+        return 0;
     }
 
-    JNINativeMethod method{
-            const_cast<char*>(method_name),
-            const_cast<char*>(signature),
-            replacement,
+    JNINativeMethod methods[2]{
+            {
+                    const_cast<char*>("nativeCaptureDisplay"),
+                    const_cast<char*>(profile.display_signature),
+                    display_replacement,
+            },
+            {
+                    const_cast<char*>("nativeCaptureLayers"),
+                    const_cast<char*>(profile.layers_signature),
+                    layers_replacement,
+            },
     };
-    api->hookJniNativeMethods(env, class_name, &method, 1);
-    if (method.fnPtr == nullptr) return false;
-    StoreOriginal(original_slot, method.fnPtr);
-    return true;
+
+    api->hookJniNativeMethods(env, profile.native_class, methods, 2);
+
+    uint32_t installed = 0;
+    if (methods[0].fnPtr != nullptr) {
+        StoreOriginal(&g_original_display, methods[0].fnPtr);
+        installed |= lifecycle::kCaptureDisplay;
+    }
+    if (methods[1].fnPtr != nullptr) {
+        StoreOriginal(&g_original_layers, methods[1].fnPtr);
+        installed |= lifecycle::kCaptureLayers;
+    }
+    return installed;
 }
 
 }  // namespace
 
 CaptureInstallReport InstallJniCaptureHooks(zygisk::Api* api,
-                                            JNIEnv* env) noexcept {
+                                            JNIEnv* env,
+                                            int sdk) noexcept {
     CaptureInstallReport report{
             0,
             lifecycle::ProfileId::kNone,
@@ -268,26 +312,13 @@ CaptureInstallReport InstallJniCaptureHooks(zygisk::Api* api,
     }
 
     CaptureFields fields{};
-    const CaptureProfile* profile = ProbeProfile(env, &fields);
+    const CaptureProfile* profile = ProbeProfile(env, sdk, &fields);
     if (profile == nullptr) return report;
 
-    // Publish immutable field IDs before any wrapper can be entered.
     g_fields = fields;
     report.profile = profile->id;
     report.hook_attempted = true;
-
-    if (HookOne(api, env, profile->native_class, "nativeCaptureDisplay",
-                profile->display_signature, DisplayReplacement(profile->abi),
-                &g_original_display)) {
-        report.installed |= lifecycle::kCaptureDisplay;
-    }
-
-    if (HookOne(api, env, profile->native_class, "nativeCaptureLayers",
-                profile->layers_signature, LayersReplacement(profile->abi),
-                &g_original_layers)) {
-        report.installed |= lifecycle::kCaptureLayers;
-    }
-
+    report.installed = HookProfile(api, env, *profile);
     return report;
 }
 
