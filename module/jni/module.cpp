@@ -32,9 +32,6 @@ public:
             return;
         }
 
-        // Only the exact Android 11 SystemUI process reaches companion IPC.
-        // This keeps specialization of every unrelated app allocation-free
-        // apart from the bounded process-name comparison above.
         if (!zsc::config::LoadFromCompanion(api_, &config_)) {
             api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             return;
@@ -74,8 +71,6 @@ public:
                 capabilities.attempted & ~capabilities.installed;
         zsc::lifecycle::StoreCapabilities(capabilities);
 
-        // Once the hook API has been invoked, this process deliberately keeps
-        // the module mapped even when the exact native method was unavailable.
         if (capabilities.failed != 0) {
             ZSC_LOGE("Android 11 SystemUI adapter unavailable; installed=0x%08x",
                      installed);
@@ -121,7 +116,7 @@ public:
                 zsc::lifecycle::InitState::kInstalling);
         const zsc::lifecycle::InstallReport report =
                 zsc::lifecycle::InstallSystemServerFeatures(
-                        api_, env_, config_);
+                        api_, env_, sdk_, config_);
         zsc::lifecycle::StoreCapabilities(report.capabilities);
 
         const bool ready =
