@@ -170,7 +170,7 @@ void BuildSafeDisabledSnapshot(ConfigSnapshot* output) noexcept {
 void BuildDefaultSnapshot(ConfigSnapshot* output) noexcept {
     if (output == nullptr) return;
     memset(output, 0, sizeof(*output));
-    output->header.flags = kCaptureSecureLayers | kLegacyRelayoutAuto | kVendorAdaptersAuto;
+    output->header.flags = kCaptureSecureLayers;
     Finalize(output);
 }
 bool ValidateSnapshot(const ConfigSnapshot& s) noexcept {
