@@ -6,6 +6,8 @@
 
 namespace zsc::lifecycle {
 
+constexpr bool kAppFeatureBackendsCompiled = true;
+
 enum class ProcessRole : unsigned char {
     kIrrelevant = 0,
     kSystemUi,
@@ -18,8 +20,9 @@ struct ProcessDecision final {
     bool keep_library;
 };
 
-ProcessDecision EvaluateAppProcess(JNIEnv* env, jstring nice_name,
+ProcessDecision EvaluateAppProcess(JNIEnv* env, jstring nice_name, int sdk,
                                    const config::ConfigSnapshot& config) noexcept;
-bool ShouldKeepSystemServer(const config::ConfigSnapshot& config) noexcept;
+bool ShouldKeepSystemServer(int sdk,
+                            const config::ConfigSnapshot& config) noexcept;
 
 }  // namespace zsc::lifecycle
