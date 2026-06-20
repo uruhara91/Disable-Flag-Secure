@@ -12,18 +12,14 @@ enum Feature : uint32_t {
     kRecordingDetection = UINT32_C(1) << 4,
     kLegacyRelayout = UINT32_C(1) << 5,
     kVendorAdapter = UINT32_C(1) << 6,
-
-    // Runtime profile markers are reported alongside functional bits.
-    kModernScreenCaptureProfile = UINT32_C(1) << 7,
-    kLegacySurfaceControlProfile = UINT32_C(1) << 8,
-    kAndroid11SystemUiProfile = UINT32_C(1) << 9,
 };
 
 enum class ProfileId : uint32_t {
     kNone = 0,
     kAndroid11SystemUi = 1,
     kSurfaceControlAndroid12To13 = 2,
-    kScreenCaptureAndroid14To16 = 3,
+    kScreenCaptureAndroid14 = 3,
+    kScreenCaptureAndroid15To16 = 4,
 };
 
 struct CapabilitySnapshot final {
