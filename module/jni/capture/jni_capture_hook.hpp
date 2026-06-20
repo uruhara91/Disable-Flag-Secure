@@ -3,12 +3,22 @@
 #include <jni.h>
 #include <stdint.h>
 
+#include "../lifecycle/capability_registry.hpp"
+
 namespace zygisk {
 struct Api;
 }
 
 namespace zsc::capture {
 
-uint32_t InstallJniCaptureHooks(zygisk::Api* api, JNIEnv* env) noexcept;
+struct CaptureInstallReport final {
+    uint32_t installed;
+    lifecycle::ProfileId profile;
+    bool hook_attempted;
+};
+
+CaptureInstallReport InstallJniCaptureHooks(zygisk::Api* api,
+                                            JNIEnv* env,
+                                            int sdk) noexcept;
 
 }  // namespace zsc::capture

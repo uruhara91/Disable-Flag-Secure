@@ -23,18 +23,21 @@ uint32_t g_missing_original_log_once = 0;
 
 ZSC_ALWAYS_INLINE NativeScreenshotFn LoadOriginal() noexcept {
     return reinterpret_cast<NativeScreenshotFn>(
-            __atomic_load_n(&g_original_native_screenshot, __ATOMIC_ACQUIRE));
+            __atomic_load_n(&g_original_native_screenshot,
+                            __ATOMIC_ACQUIRE));
 }
 
-jobject HookNativeScreenshot(JNIEnv* env, jclass clazz, jobject display_token,
-                             jobject source_crop, jint width, jint height,
-                             jboolean use_identity_transform, jint rotation,
-                             jboolean capture_secure_layers) {
+ZSC_HOT jobject HookNativeScreenshot(
+        JNIEnv* env, jclass clazz, jobject display_token,
+        jobject source_crop, jint width, jint height,
+        jboolean use_identity_transform, jint rotation,
+        jboolean capture_secure_layers) {
     (void)capture_secure_layers;
     NativeScreenshotFn original = LoadOriginal();
     if (ZSC_UNLIKELY(original == nullptr)) {
-        ZSC_LOGE_ONCE(g_missing_original_log_once,
-                      "Android 11 screenshot hook observed a missing original pointer");
+        ZSC_LOGE_ONCE(
+                g_missing_original_log_once,
+                "Android 11 screenshot hook observed a missing original pointer");
         return nullptr;
     }
 
@@ -74,8 +77,7 @@ uint32_t InstallAndroid11SystemUiCaptureHook(zygisk::Api* api,
 
     __atomic_store_n(&g_original_native_screenshot, method.fnPtr,
                      __ATOMIC_RELEASE);
-    return lifecycle::kCaptureDisplay |
-           lifecycle::kAndroid11SystemUiProfile;
+    return lifecycle::kCaptureDisplay;
 }
 
 }  // namespace zsc::capture

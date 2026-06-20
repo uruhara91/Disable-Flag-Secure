@@ -17,7 +17,7 @@ struct InstallReport final {
 };
 
 InstallReport InstallSystemServerFeatures(
-        zygisk::Api* api, JNIEnv* env,
+        zygisk::Api* api, JNIEnv* env, int sdk,
         const config::ConfigSnapshot& config) noexcept;
 
 }  // namespace zsc::lifecycle
