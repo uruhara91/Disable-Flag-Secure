@@ -1,6 +1,6 @@
 #!/system/bin/sh
 
-MIN_SDK=31
+MIN_SDK=30
 MAX_SDK=36
 CURRENT_SDK="$(getprop ro.build.version.sdk)"
 CURRENT_ABIS="$(getprop ro.product.cpu.abilist)"
@@ -38,8 +38,12 @@ else
   ui_print "* Enable a compatible Zygisk implementation"
 fi
 
-ui_print "* v0.1 hooks system_server only"
-ui_print "* mAllowProtected is always forced false"
+if [ "$CURRENT_SDK" -eq 30 ]; then
+  ui_print "* Android 11 path: exact SystemUI nativeScreenshot adapter"
+else
+  ui_print "* Android 12-16 path: system_server capture adapter"
+fi
+ui_print "* Protected and DRM-backed capture remains disabled"
 ui_print "* Automatic disable follows three incomplete boots"
 ui_print "* Keep a recovery path available"
 ui_print "* Reboot is required"
