@@ -33,7 +33,18 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
 
       - name: Build and verify
-        run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION" ./build.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION" ./build.sh 2>&1 | tee build.log
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-${{ github.sha }}
+          path: build.log
+          if-no-files-found: warn
 
       - name: Upload module ZIP
         uses: actions/upload-artifact@v4
