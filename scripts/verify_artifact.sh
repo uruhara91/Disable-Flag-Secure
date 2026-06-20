@@ -15,8 +15,18 @@ if [[ -z "$NDK_ROOT" ]]; then
   exit 1
 fi
 
-READELF="$(find "$NDK_ROOT/toolchains/llvm/prebuilt" -type f \( -name llvm-readelf -o -name llvm-readelf.exe \) | head -n 1)"
-if [[ -z "$READELF" || ! -x "$READELF" ]]; then
+READELF=""
+while IFS= read -r candidate; do
+  if [[ -x "$candidate" ]]; then
+    READELF="$candidate"
+    break
+  fi
+done < <(find "$NDK_ROOT/toolchains/llvm/prebuilt" \
+  \( -type f -o -type l \) \
+  \( -name llvm-readelf -o -name llvm-readelf.exe \) \
+  -print 2>/dev/null)
+
+if [[ -z "$READELF" ]]; then
   echo "llvm-readelf was not found in the Android NDK." >&2
   exit 1
 fi
