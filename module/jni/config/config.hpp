@@ -24,9 +24,17 @@ enum FeatureFlag : uint32_t {
 };
 
 constexpr uint32_t kKnownFeatureFlags =
-        kCaptureSecureLayers | kMetadataSanitizer | kScreenshotDetectionShield |
-        kRecordingDetectionShield | kLegacyRelayoutAuto | kVendorAdaptersAuto |
-        kDebugLogging;
+        kCaptureSecureLayers | kMetadataSanitizer |
+        kScreenshotDetectionShield | kRecordingDetectionShield |
+        kLegacyRelayoutAuto | kVendorAdaptersAuto | kDebugLogging;
+
+// Only features with a compiled runtime backend may survive companion
+// normalization. Reserved flags stay in the protocol for forward-compatible
+// configuration files, but cannot retain a process or report false support.
+constexpr uint32_t kCompiledFeatureFlags = kCaptureSecureLayers;
+constexpr uint32_t kTargetScopedFeatureFlags =
+        kScreenshotDetectionShield | kRecordingDetectionShield |
+        kLegacyRelayoutAuto;
 
 struct ConfigHeader final {
     uint32_t magic;
