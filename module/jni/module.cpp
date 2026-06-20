@@ -83,6 +83,17 @@ public:
         zsc::lifecycle::SetInitState(
                 zsc::lifecycle::InitState::kNotStarted);
 
+        // Android 11 uses the SystemUI app-side adapter. Unknown future SDKs
+        // fail open without companion IPC or framework probing.
+        if (sdk_ < 31 || sdk_ > 36) {
+            zsc::lifecycle::SetInitState(
+                    zsc::lifecycle::InitState::kDisabled);
+            if (api_ != nullptr) {
+                api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            }
+            return;
+        }
+
         if (!zsc::config::LoadFromCompanion(api_, &config_)) {
             zsc::lifecycle::SetInitState(
                     zsc::lifecycle::InitState::kConfigUnavailable);
