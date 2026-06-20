@@ -1,5 +1,4 @@
-#!/system/bin/sh
-# Also works under a normal POSIX host shell despite this Android-friendly shebang.
+#!/usr/bin/env sh
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
