@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <jni.h>
+#include <stdint.h>
 
 namespace zygisk {
 struct Api;
