@@ -11,14 +11,13 @@ struct Api;
 
 namespace zsc::lifecycle {
 
-constexpr bool kAppFeatureBackendsCompiled = false;
-
 struct InstallReport final {
     CapabilitySnapshot capabilities;
     bool hook_attempted;
 };
 
-InstallReport InstallSystemServerFeatures(zygisk::Api* api, JNIEnv* env,
-                                        const config::ConfigSnapshot& config) noexcept;
+InstallReport InstallSystemServerFeatures(
+        zygisk::Api* api, JNIEnv* env,
+        const config::ConfigSnapshot& config) noexcept;
 
 }  // namespace zsc::lifecycle
